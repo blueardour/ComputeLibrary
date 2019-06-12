@@ -69,6 +69,15 @@ class LayerParameter
       seed = sd;
     }
 
+    void print()
+    {
+      std::cout << "layer info: " << std::endl;
+      std::cout << "width and height: " << width << ", " << height << std::endl;
+      std::cout << "cin and cout: " << cin << ", " << cout << std::endl;
+      std::cout << "pad, stride, dilation: " << pad << ", " << stride << ", " << dilation << std::endl;
+      std::cout << "kernel: " << kernel << std::endl;
+    }
+
     int outw() { return (width  + 2*pad - kernel) / stride + 1; }
     int outh() { return (height + 2*pad - kernel) / stride + 1; }
 
@@ -197,7 +206,11 @@ int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32)
   }
 
   // run
+  struct timeval begin, end;
+  gettimeofday(&begin, NULL);
   conv->run();
+  gettimeofday(&end, NULL);
+  std::cout << "time cost for execution kernel " << (end.tv_sec - begin.tv_sec)*1000000 + (end.tv_usec - begin.tv_usec) << " us\n";
 
   if(lp->buffer_ready)
   {
@@ -303,9 +316,12 @@ int test_gpu(LayerParameter *lp, DataType dtype=DataType::F32)
   // run
   CLScheduler::get().sync();
 
+  struct timeval begin, end;
+  gettimeofday(&begin, NULL);
   conv->run();
-
   CLScheduler::get().sync();
+  gettimeofday(&end, NULL);
+  std::cout << "time cost for execution kernel " << (end.tv_sec - begin.tv_sec)*1000000 + (end.tv_usec - begin.tv_usec) << " us\n";
 
   // print result
   output->map(true);
@@ -333,15 +349,22 @@ int main(int argc, char **argv)
   if(debug) printf("[debug] @ line %d: \n", __LINE__);
   char workspace[256];
   strcpy(workspace, argv[0]);
+  int i;
 
-  LayerParameter lp;
-  lp.width = lp.height = 40;
-  lp.cin = 3;
-  lp.cout = 24;
-  lp.init();
-  test_cpu(&lp, DataType::F32);
-  test_gpu(&lp, DataType::F32);
-  lp.save(workspace);
+  LayerParameter layers[7];
+  layers[1].width = layers[1].height = 112;
+  layers[2].width = layers[2].height = 224;
+  layers[3].width = layers[3].height = 448;
+  layers[4].cin = layers[4].cout = 32;
+  layers[5].cin = layers[5].cout = 128;
+  layers[6].cin = layers[6].cout = 256;
+  for(i=0; i<7; i++) {
+    layers[i].init();
+    layers[i].print();
+    test_cpu(layers + i, DataType::F32);
+    test_gpu(layers + i, DataType::F16);
+  }
+  //lp.save(workspace);
   return 0;
 }
 
