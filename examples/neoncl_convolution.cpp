@@ -40,6 +40,27 @@ using namespace utils;
 
 static const bool debug = false;
 
+#ifndef FLT_EPSILON
+#ifdef __FLT_EPSILON__
+#define FLT_EPSILON __FLT_EPSILON__
+#endif
+#endif
+
+static bool AlmostEqualAbsoluateRelative(float A, float B, bool verbose=false, float absolute=1e-4, float relative=FLT_EPSILON)
+{
+  float diff, largest;
+  diff = fabs(A - B);
+  if(diff <= absolute) return true;
+  A = fabs(A);
+  B = fabs(B);
+  largest = (B > A) ? B : A;
+  if (diff <= largest * relative) return true;
+
+  if(verbose)
+    printf("A(%f) B(%f) largest(%f), diff(%f)\n", A, B, largest, diff);
+  return false;
+}
+
 class LayerParameter
 {
   public:
@@ -71,11 +92,11 @@ class LayerParameter
 
     void print()
     {
-      std::cout << "layer info: " << std::endl;
-      std::cout << "width and height: " << width << ", " << height << std::endl;
-      std::cout << "cin and cout: " << cin << ", " << cout << std::endl;
-      std::cout << "pad, stride, dilation: " << pad << ", " << stride << ", " << dilation << std::endl;
-      std::cout << "kernel: " << kernel << std::endl;
+      std::cout << "==> layer info: " << std::endl;
+      std::cout << "    width and height: " << width << ", " << height << std::endl;
+      std::cout << "    cin and cout: " << cin << ", " << cout << std::endl;
+      std::cout << "    pad, stride, dilation: " << pad << ", " << stride << ", " << dilation << std::endl;
+      std::cout << "    kernel: " << kernel << std::endl;
     }
 
     int outw() { return (width  + 2*pad - kernel) / stride + 1; }
@@ -91,16 +112,31 @@ class LayerParameter
 
       len = cin * width * height;
       tmp = input = (float *)malloc(bs * len);
-      for(i=0; i<len; i++) tmp[i] = tanh(((random() % 1000) -500) * 0.001f);
+      for(i=0; i<len; i++) tmp[i] = tanh(((random() % 1000) - 500) * 0.001f);
 
       len = cin * cout * kernel * kernel;
       tmp = weight = (float *)malloc(bs * len);
-      for(i=0; i<len; i++) tmp[i] = tanh(((random() % 1000) -500) * 0.001f);
+      for(i=0; i<len; i++) tmp[i] = tanh(((random() % 1000) - 500) * 0.001f);
 
       len = cout * outw() * outh();
       cpu_buffer = (float *)malloc(bs * len);
       gpu_buffer = (float *)malloc(bs * len);
       buffer_ready = true;
+    }
+
+    int compare()
+    {
+      if(buffer_ready) {
+        int len, i;
+        len = cout * outw() * outh();
+        for(i=0; i<len; i++)
+          if(AlmostEqualAbsoluateRelative(cpu_buffer[i], gpu_buffer[i]) == false) {
+            printf("*** result not match @ %d: %f vs %f\n", i, cpu_buffer[i], gpu_buffer[i]);
+            break;
+          }
+
+      }
+      return 0;
     }
 
     void save(float *buffer, int len, char *workspace) {
@@ -130,7 +166,7 @@ class LayerParameter
     }
 };
 
-int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32)
+int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32, ConvolutionMethod method=arm_compute::ConvolutionMethod::WINOGRAD)
 {
   std::cout << "Enter " << __FUNCTION__ << std::endl;
   // init data tensor
@@ -151,22 +187,39 @@ int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32)
   // init conv layer
   PadStrideInfo conv_info(lp->stride, lp->stride, lp->pad, lp->pad);
 
-  NEConvolutionLayer *conv = new NEConvolutionLayer();
-  conv->configure(data, weight, nullptr, output, conv_info);
 
-  Status status = conv->validate(data->info(), weight->info(), nullptr, output->info(), conv_info);
-  if((bool)status != true)
-    std::cout << "Return Error: " << status.error_description() << std::endl;
+  NEConvolutionLayer *conv1 = NULL;
+  NEDirectConvolutionLayer *conv2 = NULL;
+  NEGEMMConvolutionLayer *conv3 = NULL;
+  NEWinogradConvolutionLayer *conv4 = NULL;
+  if(method == arm_compute::ConvolutionMethod::DIRECT) {
+    conv2 = new NEDirectConvolutionLayer();
+    conv2->configure(data, weight, nullptr, output, conv_info);
+  }
+  else if(method == arm_compute::ConvolutionMethod::GEMM) {
+    conv3 = new NEGEMMConvolutionLayer();
+    conv3->configure(data, weight, nullptr, output, conv_info);
+  }
+  else if(method == arm_compute::ConvolutionMethod::WINOGRAD) {
+    conv1 = new NEConvolutionLayer();
+    conv1->configure(data, weight, nullptr, output, conv_info);
+    conv4 = new NEWinogradConvolutionLayer();
+    conv4->configure(data, weight, nullptr, output, conv_info);
+  }
 
-  ConvolutionMethod method = conv->get_convolution_method(data->info(), weight->info(), output->info(), conv_info);
-  if(method == arm_compute::ConvolutionMethod::GEMM)
-    std::cout << "GEMM" << std::endl;
-  else if(method == arm_compute::ConvolutionMethod::WINOGRAD)
-    std::cout << "WINOGRAD" << std::endl;
-  else if(method == arm_compute::ConvolutionMethod::DIRECT)
-    std::cout << "DIRECT" << std::endl;
-  else
-    std::cout << "Unkown" << std::endl;
+  //Status status = conv->validate(data->info(), weight->info(), nullptr, output->info(), conv_info);
+  //if((bool)status != true)
+  //  std::cout << "Return Error: " << status.error_description() << std::endl;
+
+  //ConvolutionMethod method = conv->get_convolution_method(data->info(), weight->info(), output->info(), conv_info);
+  //if(method == arm_compute::ConvolutionMethod::GEMM)
+  //  std::cout << "GEMM" << std::endl;
+  //else if(method == arm_compute::ConvolutionMethod::WINOGRAD)
+  //  std::cout << "WINOGRAD" << std::endl;
+  //else if(method == arm_compute::ConvolutionMethod::DIRECT)
+  //  std::cout << "DIRECT" << std::endl;
+  //else
+  //  std::cout << "Unkown" << std::endl;
 
   // allocate and assgin value
   data->allocator()->allocate();
@@ -176,16 +229,11 @@ int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32)
   {
     Window window;
     window.use_tensor_dimensions(data->info()->tensor_shape());
-    //std::cout << " Dimensions of the input's iterator:\n";
-    //std::cout << " X = [start=" << window.x().start() << ", end=" << window.x().end() << ", step=" << window.x().step() << "]\n";
-    //std::cout << " Y = [start=" << window.y().start() << ", end=" << window.y().end() << ", step=" << window.y().step() << "]\n";
-    //std::cout << " Z = [start=" << window.z().start() << ", end=" << window.z().end() << ", step=" << window.z().step() << "]\n";
 
     Iterator input_iter(data, window);
     execute_window_loop(window,
         // lambda function
         [&](const Coordinates & id) {
-            //std::cout << "Setting item [" << id.x() << "," << id.y() << "," << id.z() << "]\n";
             *reinterpret_cast<float *>(input_iter.ptr()) = lp->input[(id.z()*lp->height + id.y())*lp->width + id.x()];
         },
         input_iter);
@@ -195,20 +243,28 @@ int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32)
     execute_window_loop(window,
         // lambda function
         [&](const Coordinates & id) {
-            //std::cout << "Setting item [" << id.x() << "," << id.y() << "," << id.z() << "]\n";
             *reinterpret_cast<float *>(weight_iter.ptr()) = lp->weight[((id[3]*lp->cin + id[2]) * lp->kernel + id[1]) * lp->kernel + id[0]];
         },
         weight_iter);
 
   } else {
-    // # the following manner is wrong the assgin the value, never call this
-    //for (size_t i = 0; i < input_shape.total_size(); i++) ptr[i] = 1.0;
+    printf("input data and wright are not initilized\n");
   }
 
   // run
   struct timeval begin, end;
   gettimeofday(&begin, NULL);
-  conv->run();
+  //conv->run();
+  if(method == arm_compute::ConvolutionMethod::DIRECT) {
+    conv2->run();
+  }
+  else if(method == arm_compute::ConvolutionMethod::GEMM) {
+    conv3->run();
+  }
+  else if(method == arm_compute::ConvolutionMethod::WINOGRAD) {
+    conv4->run();
+    //conv1->run();
+  }
   gettimeofday(&end, NULL);
   std::cout << "time cost for execution kernel " << (end.tv_sec - begin.tv_sec)*1000000 + (end.tv_usec - begin.tv_usec) << " us\n";
 
@@ -220,7 +276,6 @@ int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32)
     execute_window_loop(window,
         // lambda function
         [&](const Coordinates & id) {
-            //std::cout << "Setting item [" << id.x() << "," << id.y() << "," << id.z() << "]\n";
             memcpy(lp->cpu_buffer + (id.z() * lp->outh() + id.y()) * lp->outw(), output_iter.ptr(), lp->outw() * sizeof(float));
         },
         output_iter);
@@ -230,7 +285,7 @@ int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32)
   return 0;
 }
 
-int test_gpu(LayerParameter *lp, DataType dtype=DataType::F32)
+int test_gpu(LayerParameter *lp, DataType dtype=DataType::F32, ConvolutionMethod method=arm_compute::ConvolutionMethod::WINOGRAD)
 {
   std::cout << "Enter " << __FUNCTION__ << std::endl;
 
@@ -254,26 +309,42 @@ int test_gpu(LayerParameter *lp, DataType dtype=DataType::F32)
 
   // init conv layer
   PadStrideInfo conv_info(lp->stride, lp->stride, lp->pad, lp->pad);
-  WeightsInfo weight_info = WeightsInfo();
-  ActivationLayerInfo act_info = ActivationLayerInfo();
 
-  CLConvolutionLayer* conv = new CLConvolutionLayer();
-  conv->configure(data, weight, nullptr, output, conv_info);
+  CLConvolutionLayer *conv1 = NULL;
+  CLDirectConvolutionLayer *conv2 = NULL;
+  CLGEMMConvolutionLayer *conv3 = NULL;
+  CLWinogradConvolutionLayer *conv4 = NULL;
+  if(method == arm_compute::ConvolutionMethod::DIRECT) {
+    conv2 = new CLDirectConvolutionLayer();
+    conv2->configure(data, weight, nullptr, output, conv_info);
+  }
+  else if(method == arm_compute::ConvolutionMethod::GEMM) {
+    conv3 = new CLGEMMConvolutionLayer();
+    conv3->configure(data, weight, nullptr, output, conv_info);
+  }
+  else if(method == arm_compute::ConvolutionMethod::WINOGRAD) {
+    conv1 = new CLConvolutionLayer();
+    conv1->configure(data, weight, nullptr, output, conv_info);
+    conv4 = new CLWinogradConvolutionLayer();
+    conv4->configure(data, weight, nullptr, output, conv_info);
+  }
 
-  Status status = conv->validate(data->info(), weight->info(), nullptr, output->info(), conv_info);
-  if((bool)status != true)
-    std::cout << "Return Error: " << status.error_description() << std::endl;
+  //WeightsInfo weight_info = WeightsInfo();
+  //ActivationLayerInfo act_info = ActivationLayerInfo();
+  //Status status = conv->validate(data->info(), weight->info(), nullptr, output->info(), conv_info);
+  //if((bool)status != true)
+  //  std::cout << "Return Error: " << status.error_description() << std::endl;
 
-  ConvolutionMethod method = conv->get_convolution_method(data->info(), weight->info(), output->info(),
-      conv_info, weight_info, act_info, arm_compute::GPUTarget::BIFROST);
-  if(method == arm_compute::ConvolutionMethod::GEMM)
-    std::cout << "GEMM" << std::endl;
-  else if(method == arm_compute::ConvolutionMethod::WINOGRAD)
-    std::cout << "WINOGRAD" << std::endl;
-  else if(method == arm_compute::ConvolutionMethod::DIRECT)
-    std::cout << "DIRECT" << std::endl;
-  else
-    std::cout << "Unkown" << std::endl;
+  //ConvolutionMethod method = conv->get_convolution_method(data->info(), weight->info(), output->info(),
+  //    conv_info, weight_info, act_info, arm_compute::GPUTarget::BIFROST);
+  //if(method == arm_compute::ConvolutionMethod::GEMM)
+  //  std::cout << "GEMM" << std::endl;
+  //else if(method == arm_compute::ConvolutionMethod::WINOGRAD)
+  //  std::cout << "WINOGRAD" << std::endl;
+  //else if(method == arm_compute::ConvolutionMethod::DIRECT)
+  //  std::cout << "DIRECT" << std::endl;
+  //else
+  //  std::cout << "Unkown" << std::endl;
 
   // allocate and assgin value
   data->allocator() -> allocate();
@@ -318,7 +389,17 @@ int test_gpu(LayerParameter *lp, DataType dtype=DataType::F32)
 
   struct timeval begin, end;
   gettimeofday(&begin, NULL);
-  conv->run();
+  //conv->run();
+  if(method == arm_compute::ConvolutionMethod::DIRECT) {
+    conv2->run();
+  }
+  else if(method == arm_compute::ConvolutionMethod::GEMM) {
+    conv3->run();
+  }
+  else if(method == arm_compute::ConvolutionMethod::WINOGRAD) {
+    conv4->run();
+    //conv1->run();
+  }
   CLScheduler::get().sync();
   gettimeofday(&end, NULL);
   std::cout << "time cost for execution kernel " << (end.tv_sec - begin.tv_sec)*1000000 + (end.tv_usec - begin.tv_usec) << " us\n";
@@ -351,18 +432,34 @@ int main(int argc, char **argv)
   strcpy(workspace, argv[0]);
   int i;
 
-  LayerParameter layers[7];
-  layers[1].width = layers[1].height = 112;
-  layers[2].width = layers[2].height = 224;
-  layers[3].width = layers[3].height = 448;
-  layers[4].cin = layers[4].cout = 32;
-  layers[5].cin = layers[5].cout = 128;
-  layers[6].cin = layers[6].cout = 256;
-  for(i=0; i<7; i++) {
+  i=0;
+  LayerParameter layers[10];
+  layers[i].width = layers[i].height = 28; i++;
+  layers[i].width = layers[i].height = 56; i++;
+  layers[i].width = layers[i].height = 112;i++;
+  layers[i].width = layers[i].height = 224;i++;
+  layers[i].width = layers[i].height = 448;i++;
+  layers[i].cin =   layers[i].cout = 16;   i++;
+  layers[i].cin =   layers[i].cout = 32;   i++;
+  layers[i].cin =   layers[i].cout = 64;   i++;
+  layers[i].cin =   layers[i].cout = 128;  i++;
+  layers[i].cin =   layers[i].cout = 256;  i++;
+  for(i=0; i<10; i++) {
     layers[i].init();
     layers[i].print();
-    test_cpu(layers + i, DataType::F32);
-    test_gpu(layers + i, DataType::F16);
+    //test_cpu(layers + i, DataType::U8, arm_compute::ConvolutionMethod::DIRECT);
+    
+    //test_cpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::DIRECT);
+    //test_cpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::GEMM);
+    test_cpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::WINOGRAD);
+    //test_gpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::DIRECT);
+    ////layers[i].compare();
+    //test_gpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::GEMM);
+    ////layers[i].compare();
+    test_gpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::WINOGRAD);
+    layers[i].compare();
+    ////test_cpu(layers + i, DataType::F16); // only on ARM v8.2
+    ////test_gpu(layers + i, DataType::F16);
   }
   //lp.save(workspace);
   return 0;
