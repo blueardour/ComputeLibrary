@@ -266,7 +266,7 @@ int test_cpu(LayerParameter *lp, DataType dtype=DataType::F32, ConvolutionMethod
     //conv1->run();
   }
   gettimeofday(&end, NULL);
-  std::cout << "time cost for execution kernel " << (end.tv_sec - begin.tv_sec)*1000000 + (end.tv_usec - begin.tv_usec) << " us\n";
+  std::cout << "time cost for execution cpu kernel " << (end.tv_sec - begin.tv_sec)*1000000 + (end.tv_usec - begin.tv_usec) << " us\n";
 
   if(lp->buffer_ready)
   {
@@ -402,7 +402,7 @@ int test_gpu(LayerParameter *lp, DataType dtype=DataType::F32, ConvolutionMethod
   }
   CLScheduler::get().sync();
   gettimeofday(&end, NULL);
-  std::cout << "time cost for execution kernel " << (end.tv_sec - begin.tv_sec)*1000000 + (end.tv_usec - begin.tv_usec) << " us\n";
+  std::cout << "time cost for execution gpu kernel " << (end.tv_sec - begin.tv_sec)*1000000 + (end.tv_usec - begin.tv_usec) << " us\n";
 
   // print result
   output->map(true);
@@ -432,8 +432,9 @@ int main(int argc, char **argv)
   strcpy(workspace, argv[0]);
   int i;
 
+  const int layer_numer = 11;
   i=0;
-  LayerParameter layers[10];
+  LayerParameter layers[layer_numer];
   layers[i].width = layers[i].height = 28; i++;
   layers[i].width = layers[i].height = 56; i++;
   layers[i].width = layers[i].height = 112;i++;
@@ -444,7 +445,8 @@ int main(int argc, char **argv)
   layers[i].cin =   layers[i].cout = 64;   i++;
   layers[i].cin =   layers[i].cout = 128;  i++;
   layers[i].cin =   layers[i].cout = 256;  i++;
-  for(i=0; i<10; i++) {
+  layers[i].cin =   layers[i].cout = 512;  i++;
+  for(i=0; i<layer_numer; i++) {
     layers[i].init();
     layers[i].print();
     //test_cpu(layers + i, DataType::U8, arm_compute::ConvolutionMethod::DIRECT);
@@ -454,12 +456,14 @@ int main(int argc, char **argv)
     test_cpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::WINOGRAD);
     //test_gpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::DIRECT);
     ////layers[i].compare();
-    //test_gpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::GEMM);
-    ////layers[i].compare();
+    test_gpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::GEMM);
+    layers[i].compare();
+
     test_gpu(layers + i, DataType::F32, arm_compute::ConvolutionMethod::WINOGRAD);
     layers[i].compare();
-    ////test_cpu(layers + i, DataType::F16); // only on ARM v8.2
-    ////test_gpu(layers + i, DataType::F16);
+
+    //test_cpu(layers + i, DataType::F16); // only on ARM v8.2
+    //test_gpu(layers + i, DataType::F16, arm_compute::ConvolutionMethod::WINOGRAD);
   }
   //lp.save(workspace);
   return 0;
